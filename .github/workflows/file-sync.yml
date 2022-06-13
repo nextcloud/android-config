@@ -14,3 +14,6 @@ jobs:
         uses: BetaHuhn/repo-file-sync-action@d61fc2b98c0b48c5ee77d9b575b191fe8e59cba3
         with:
           GH_PAT: ${{ secrets.GH_PAT }}
+          GIT_USERNAME: nextcloud-android-bot
+          GIT_EMAIL: android@nextcloud.com
+          COMMIT_BODY: "Signed-off-by: nextcloud-android-bot <android@nextcloud.com>"
