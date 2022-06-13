@@ -1,0 +1,9 @@
+# file sync configuration for repo-file-sync-action
+group:
+  repos: |
+    nextcloud/android@master
+    nextcloud/talk-android@master
+    nextcloud/android-library@master
+  files:
+    - source: config/workflows/
+      dest: .github/workflows/
