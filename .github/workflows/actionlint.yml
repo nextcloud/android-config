@@ -1,0 +1,21 @@
+name: Lint workflow files
+on:
+  pull_request:
+    branches:
+      - main
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Download actionlint
+        run: |
+          cd /tmp
+          wget https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash
+          chmod +x ./download-actionlint.bash && ./download-actionlint.bash
+      - name: Lint repo workflows
+        run: /tmp/actionlint
+      - name: Lint synced workflows
+        run: |
+          cd config/workflows
+          /tmp/actionlint ./*
