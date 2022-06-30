@@ -20,7 +20,7 @@ jobs:
                 echo "No new files added"
                 exit 0
             fi
-            new_java=$(echo '${{ steps.file_changes.outputs.files_added }}' | tr ',' '\n' | grep '\.java$')
+            new_java=$(echo '${{ steps.file_changes.outputs.files_added }}' | tr ',' '\n' | grep '\.java$' | cat)
             if [ -n "$new_java" ]; then
                 # shellcheck disable=SC2016
                 printf 'New java files detected:\n```\n%s\n```\n' "$new_java" | tee "$GITHUB_STEP_SUMMARY"
