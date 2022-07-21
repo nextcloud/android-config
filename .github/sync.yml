@@ -4,6 +4,7 @@ group:
     nextcloud/android@master
     nextcloud/talk-android@master
     nextcloud/android-library@master
+    nextcloud/android-common@main
   files:
     - source: config/workflows/
       dest: .github/workflows/
