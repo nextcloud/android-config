@@ -8,3 +8,5 @@ group:
   files:
     - source: config/workflows/
       dest: .github/workflows/
+    - source: config/scripts/
+      dest: scripts/shared/
