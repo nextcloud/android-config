@@ -11,5 +11,5 @@ source "$(dirname "$0")/lib.sh"
 if [ -z "${PR_NUMBER}" ]; then
     git branch --show-current
 else
-    curl_gh "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" | jq .base.ref
+    curl_gh "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" | jq .head.ref
 fi
