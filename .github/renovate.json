@@ -6,6 +6,10 @@
     ":disableDependencyDashboard",
     "schedule:daily"
   ],
+  "timezone": "Europe/Berlin",
+  "labels": [
+    "dependencies"
+  ],
   "enabledManagers": [
     "github-actions"
   ],
