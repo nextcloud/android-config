@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: file_changes
-        uses: trilom/file-changes-action@a6ca26c14274c33b15e6499323aac178af06ad4b # renovate: tag=v1.2.4
+        uses: trilom/file-changes-action@a6ca26c14274c33b15e6499323aac178af06ad4b # v1.2.4
         with:
           output: ','
       - name: Detect new java files

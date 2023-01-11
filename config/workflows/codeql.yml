@@ -26,9 +26,9 @@ jobs:
         language: [ 'java' ]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # renovate: tag=v3.2.0
+        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
       - name: Set Swap Space
-        uses: pierotofy/set-swap-space@49819abfb41bd9b44fb781159c033dba90353a7c # renovate: tag=v1.0
+        uses: pierotofy/set-swap-space@49819abfb41bd9b44fb781159c033dba90353a7c # v1.0
         with:
           swap-size-gb: 10
       - name: Initialize CodeQL

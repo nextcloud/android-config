@@ -9,9 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # renovate: tag=v3.2.0
+        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
       - name: Run GitHub File Sync
-        uses: BetaHuhn/repo-file-sync-action@475a6502288f55cc52e951bdd1c44d7981218478 # renovate: tag=v1.19.0
+        uses: BetaHuhn/repo-file-sync-action@475a6502288f55cc52e951bdd1c44d7981218478 # v1.19.0
         with:
           GH_PAT: ${{ secrets.GH_PAT }}
           GIT_USERNAME: nextcloud-android-bot
