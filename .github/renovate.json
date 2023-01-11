@@ -3,7 +3,6 @@
   "extends": [
     "config:base",
     "helpers:pinGitHubActionDigests",
-    ":disableDependencyDashboard",
     "schedule:daily"
   ],
   "timezone": "Europe/Berlin",
