@@ -1,8 +1,7 @@
 name: Sync Files
 on:
-  push:
-    branches:
-      - main
+  cron:
+    - "0 2 * * *"
   workflow_dispatch:
 jobs:
   sync:
