@@ -16,6 +16,7 @@
   "github-actions": {
     "fileMatch": [
       "^(config\\/workflows)\\/[^/]+\\.ya?ml$"
-    ]
+    ],
+    "groupName": "actions"
   }
 }
