@@ -5,6 +5,15 @@ on:
     branches:
       - master
       - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+
+concurrency:
+  group: sync-approve-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   pull-requests: write
