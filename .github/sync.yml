@@ -13,7 +13,7 @@ group:
         dest: .github/dependabot.yml
 
   - repos: |
-      nextcloud/android-config@master
+      nextcloud/android-config@main
     files:
       - source: config/workflows/scorecard.yml
         dest: .github/workflows/scorecard.yml
