@@ -1,13 +1,19 @@
 # file sync configuration for repo-file-sync-action
 group:
-  repos: |
-    nextcloud/android@master
-    nextcloud/talk-android@master
-    nextcloud/android-library@master
-    nextcloud/android-common@main
-    nextcloud/notes-android@main
-  files:
-    - source: config/workflows/
-      dest: .github/workflows/
-    - source: config/dependabot.yml
-      dest: .github/dependabot.yml
+  - repos: |
+      nextcloud/android@master
+      nextcloud/talk-android@master
+      nextcloud/android-library@master
+      nextcloud/android-common@main
+      nextcloud/notes-android@main
+    files:
+      - source: config/workflows/
+        dest: .github/workflows/
+      - source: config/dependabot.yml
+        dest: .github/dependabot.yml
+
+  - repos: |
+      nextcloud/android-config@master
+    files:
+      - source: config/workflows/scorecard.yml
+        dest: .github/workflows/scorecard.yml
