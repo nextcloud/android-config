@@ -7,6 +7,10 @@ on:
 permissions:
   pull-requests: write
 
+concurrency: 
+  group: auto-approve-renovate-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
