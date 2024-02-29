@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: android-config
+Upstream-Contact: Nextcloud Android team <android@nextcloud.com>
+Source: https://github.com/nextcloud/android-config
+
+Files: .github/renovate.json
+Copyright: none
+License: GPL-3.0-or-later

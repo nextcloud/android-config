@@ -1,3 +1,9 @@
+# SPDX-FileCopyrightText: 2022-2024 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2022-2023 Tobias Kaminsky <tobias@kaminsky.me
+# SPDX-FileCopyrightText: 2022-2023 Álvaro Brey <alvaro@alvarobrey.com>
+# SPDX-FileCopyrightText: 2023 Andy Scherzinger <info@andy-scherzinger.de>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 name: Lint workflow files
 on:
   pull_request:
