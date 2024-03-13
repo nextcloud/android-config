@@ -14,8 +14,6 @@ group:
     files:
       - source: config/workflows/
         dest: .github/workflows/
-      - source: config/dependabot.yml
-        dest: .github/dependabot.yml
 
   - repos: |
       nextcloud/android-config@main
