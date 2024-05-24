@@ -26,7 +26,7 @@ jobs:
   auto-approve:
     name: Auto approve sync
     runs-on: ubuntu-latest
-    if: ${{ github.event.pull_request.label.name == 'sync' && github.actor == 'nextcloud-android-bot' }}
+    if: ${{ github.event.label.name == 'sync' && github.actor == 'nextcloud-android-bot' }}
     steps:
       - uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
         with:
