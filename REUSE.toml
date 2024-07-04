@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2024 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+version = 1
+SPDX-PackageName = "android-config"
+SPDX-PackageSupplier = "Nextcloud Android team <android@nextcloud.com>"
+SPDX-PackageDownloadLocation = "https://github.com/nextcloud/android-config"
+
+[[annotations]]
+path = ".github/renovate.json"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "none"
+SPDX-License-Identifier = "GPL-3.0-or-later"
