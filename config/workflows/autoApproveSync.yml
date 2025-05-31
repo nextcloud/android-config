@@ -11,7 +11,6 @@ on:
       - master
       - main
     types:
-      - opened
       - reopened
       - synchronize
       - labeled
@@ -27,7 +26,7 @@ jobs:
   auto-approve:
     name: Auto approve sync
     runs-on: ubuntu-latest
-    if: ${{ contains(github.event.pull_request.labels.*.name, 'sync') && github.actor == 'nextcloud-android-bot' }}
+    if: ${{ github.event.label.name == 'sync' && github.actor == 'nextcloud-android-bot' }}
     steps:
       - name: Disabled on forks
         if: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
