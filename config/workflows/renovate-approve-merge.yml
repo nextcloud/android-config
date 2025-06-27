@@ -29,8 +29,6 @@ jobs:
     permissions:
       # for hmarr/auto-approve-action to approve PRs
       pull-requests: write
-      # for alexwilson/enable-github-automerge-action to approve PRs
-      contents: write
 
     steps:
       - name: Disabled on forks
