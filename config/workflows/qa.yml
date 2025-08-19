@@ -5,7 +5,7 @@ name: "QA"
 
 on:
   pull_request:
-    branches: [ master, stable-* ]
+    branches: [ main, master, stable-* ]
 
 permissions:
   pull-requests: write
