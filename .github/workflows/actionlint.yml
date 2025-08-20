@@ -32,4 +32,4 @@ jobs:
       - name: Lint synced workflows
         run: |
           cd config/workflows
-          /tmp/actionlint ./*
+          /tmp/actionlint ./*.yml
