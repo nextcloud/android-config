@@ -8,12 +8,24 @@ group:
   - repos: |
       nextcloud/android@master
       nextcloud/talk-android@master
-      nextcloud/android-library@master
-      nextcloud/android-common@main
       nextcloud/notes-android@main
     files:
       - source: config/workflows/
         dest: .github/workflows/
+
+  - repos: |
+      nextcloud/android-library@master
+      nextcloud/android-common@main
+    files:
+      - source: config/workflows/
+        dest: .github/workflows/
+    exclude: |
+      lib.sh
+      lib.sh.license
+      qa.yml
+      QA_keystore.jks
+      QA_keystore.jks.license
+      uploadArtifact.sh
 
   - repos: |
       nextcloud/android-config@main
