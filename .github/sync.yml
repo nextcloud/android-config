@@ -19,13 +19,13 @@ group:
     files:
       - source: config/workflows/
         dest: .github/workflows/
-    exclude: |
-      lib.sh
-      lib.sh.license
-      qa.yml
-      QA_keystore.jks
-      QA_keystore.jks.license
-      uploadArtifact.sh
+        exclude: |
+          lib.sh
+          lib.sh.license
+          qa.yml
+          QA_keystore.jks
+          QA_keystore.jks.license
+          uploadArtifact.sh
 
   - repos: |
       nextcloud/android-config@main
