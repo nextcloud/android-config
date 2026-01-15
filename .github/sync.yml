@@ -16,6 +16,7 @@ group:
   - repos: |
       nextcloud/android-library@master
       nextcloud/android-common@main
+      nextcloud/Android-SingleSignOn@main
     files:
       - source: config/workflows/
         dest: .github/workflows/
