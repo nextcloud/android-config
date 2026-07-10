@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2026 Tobias Kaminsky <tobias@kaminsky.me
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Configuration related to self-hosted runner.
+self-hosted-runner:
+  # Labels of self-hosted runner in array of strings.
+  labels:
+    - ubuntu-latest-low
