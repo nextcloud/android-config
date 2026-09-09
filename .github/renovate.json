@@ -14,8 +14,8 @@
     "github-actions"
   ],
   "github-actions": {
-    "fileMatch": [
-      "^(config\\/workflows)\\/[^/]+\\.ya?ml$"
+    "managerFilePatterns": [
+      "/^(config\\/workflows)\\/[^/]+\\.ya?ml$/"
     ],
     "groupName": "actions"
   }
