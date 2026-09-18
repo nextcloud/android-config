@@ -38,6 +38,7 @@ jobs:
           java-version: 21
 
       - name: Build QA
+        id: build-qa
         if: ${{ steps.check-secrets.outputs.ok == 'true' }}
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
@@ -60,9 +61,11 @@ jobs:
           ./gradlew assembleQaDebug
           $(find /usr/local/lib/android/sdk/build-tools/*/apksigner | sort | tail -n1) sign  --ks-pass pass:"$KS_PASS" --key-pass pass:"$KEY_PASS" --ks-key-alias key0 --ks ".github/workflows/QA_keystore.jks" app/build/outputs/apk/qa/debug/*qa-debug*.apk
           apk=$(find app/build/outputs/apk/qa/debug -name '*qa-debug*.apk' | head -n1)
-          echo "apk-path=$apk" >> "$GITHUB_OUTPUT"
-          echo "apk-name=$(basename "$apk")" >> "$GITHUB_OUTPUT"
-          echo "apk-size=$(du -h "$apk" | cut -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "apk-path=$apk"
+            echo "apk-name=$(basename "$apk")"
+            echo "apk-size=$(du -h "$apk" | cut -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload APK
         id: upload-apk
