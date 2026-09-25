@@ -7,3 +7,4 @@ self-hosted-runner:
   # Labels of self-hosted runner in array of strings.
   labels:
     - ubuntu-latest-low
+    - ubuntu-latest-max
