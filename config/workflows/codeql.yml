@@ -1,6 +1,7 @@
 # synced from @nextcloud/android-config
 
 # SPDX-FileCopyrightText: 2022-2024 Nextcloud GmbH and Nextcloud contributors
+# SPDX-FileCopyrightText: 2026 Alper Ozturk <alper.ozturk@nextcloud.com>
 # SPDX-FileCopyrightText: 2023-2024 Andy Scherzinger <info@andy-scherzinger.de>
 # SPDX-FileCopyrightText: 2022 Tobias Kaminsky <tobias@kaminsky.me>
 # SPDX-FileCopyrightText: 2022 Álvaro Brey <alvaro@alvarobrey.com>
@@ -20,10 +21,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze
     runs-on: ubuntu-latest-max
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -46,7 +52,8 @@ jobs:
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}
-      - name: Set up JDK 21
+          build-mode: manual
+      - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
