@@ -19,6 +19,9 @@ MAJOR_MULTIPLIER = 10000000
 MINOR_MULTIPLIER = 10000
 PATCH_MULTIPLIER = 100
 
+FDROID_ABI_VERSION_CODES = { "armeabi-v7a" => 1, "arm64-v8a" => 2, "x86" => 3, "x86_64" => 4 }.freeze
+FDROID_ABI_MULTIPLIER = 10
+
 TYPE_ALPHA = "alpha"
 TYPE_RC = "rc"
 TYPE_FINAL = "final"
@@ -52,6 +55,9 @@ platform :android do
         print "Minor: #{versionComponents["minor"]}\n"
         print "Patch: #{versionComponents["patch"]}\n"
         print "Build: #{versionComponents["build"]}\n"
+        fdroidAbiVersionCodes(versionCode: versionInfo["versionCode"]).each do |abi, versionCode|
+            print "F-Droid #{abi} version code: #{versionCode}\n"
+        end
     end
 
     # Usage: fastlane incrementVersion type:(major|minor|patch|rc|final)
@@ -125,6 +131,13 @@ platform :android do
         test
     end
 
+    desc "Generate F-Droid versionCode per ABI, must match abiVersionCode in app/build.gradle.kts"
+    private_lane :fdroidAbiVersionCodes do |options|
+        versionCode = options[:versionCode]
+        base = (versionCode / MAJOR_MULTIPLIER) * MAJOR_MULTIPLIER + (versionCode % MAJOR_MULTIPLIER) * FDROID_ABI_MULTIPLIER
+        FDROID_ABI_VERSION_CODES.transform_values { |abiCode| base + abiCode }
+    end
+
     desc "Compute version name from version code"
     private_lane :generateVersionName do |versionComponents|
         suffix = ""
@@ -153,10 +166,10 @@ platform :android do
 
     desc "Write versions to gradle file"
     private_lane :writeVersions do |options|
-        File.open("../app/build.gradle","r+") do |file|
+        File.open("../app/build.gradle.kts","r+") do |file|
             text = file.read
-            text.gsub!(/versionName "(.*)"$/, "versionName \"#{options[:versionName]}\"")
-            text.gsub!(/versionCode ([0-9]*)$/, "versionCode #{options[:versionCode]}")
+            text.sub!(/versionName = "(.*)"$/, "versionName = \"#{options[:versionName]}\"")
+            text.sub!(/versionCode = ([0-9]*)$/, "versionCode = #{options[:versionCode]}")
             file.rewind
             file.write(text)
             file.truncate(file.pos)
