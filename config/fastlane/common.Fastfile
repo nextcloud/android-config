@@ -20,6 +20,9 @@ MAJOR_MULTIPLIER = 10000000
 MINOR_MULTIPLIER = 10000
 PATCH_MULTIPLIER = 100
 
+FDROID_ABI_VERSION_CODES = { "armeabi-v7a" => 1, "arm64-v8a" => 2, "x86" => 3, "x86_64" => 4 }.freeze
+FDROID_ABI_MULTIPLIER = 10
+
 TYPE_ALPHA = "alpha"
 TYPE_RC = "rc"
 TYPE_FINAL = "final"
@@ -70,6 +73,9 @@ platform :android do
         print "Minor: #{versionComponents["minor"]}\n"
         print "Patch: #{versionComponents["patch"]}\n"
         print "Build: #{versionComponents["build"]}\n"
+        fdroidAbiVersionCodes(versionCode: versionInfo["versionCode"]).each do |abi, versionCode|
+            print "F-Droid #{abi} version code: #{versionCode}\n"
+        end
     end
 
     # Usage: fastlane incrementVersion type:(major|minor|patch|rc|final)
@@ -139,6 +145,13 @@ platform :android do
         build = versionComponents["build"]
         test = major * MAJOR_MULTIPLIER + minor * MINOR_MULTIPLIER + patch * PATCH_MULTIPLIER + build
         test
+    end
+
+    desc "Generate F-Droid versionCode per ABI, must match abiVersionCode in app/build.gradle.kts"
+    private_lane :fdroidAbiVersionCodes do |options|
+        versionCode = options[:versionCode]
+        base = (versionCode / MAJOR_MULTIPLIER) * MAJOR_MULTIPLIER + (versionCode % MAJOR_MULTIPLIER) * FDROID_ABI_MULTIPLIER
+        FDROID_ABI_VERSION_CODES.transform_values { |abiCode| base + abiCode }
     end
 
     desc "Compute version name from version code"
