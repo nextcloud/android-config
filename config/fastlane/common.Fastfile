@@ -13,6 +13,8 @@
 # update plugins
 # bundle exec fastlane update_plugins
 
+require "shellwords"
+
 BUILD_NUMBER_RC_START = 51
 BUILD_NUMBER_FINAL_START = 90
 
@@ -62,6 +64,15 @@ platform :android do
 		uploadToPlayStore(track: storeTrack)
 		uploadToHuawei(versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease)
 	end
+
+    desc "Build ABI APKs for F-Droid in app/build/fdroid/"
+    lane :buildFdroid do
+        gradle(
+            task: ":app:assembleGenericRelease",
+            flags: "--init-script #{Shellwords.escape(File.expand_path("fdroid.init.gradle"))}",
+            properties: { "fdroidAbiSplit" => true }
+        )
+    end
 
     desc "Print version info"
     lane :printVersionInfo do
@@ -147,7 +158,7 @@ platform :android do
         test
     end
 
-    desc "Generate F-Droid versionCode per ABI, must match abiVersionCode in app/build.gradle.kts"
+    desc "Generate F-Droid versionCode per ABI, must match fdroid.init.gradle"
     private_lane :fdroidAbiVersionCodes do |options|
         versionCode = options[:versionCode]
         base = (versionCode / MAJOR_MULTIPLIER) * MAJOR_MULTIPLIER + (versionCode % MAJOR_MULTIPLIER) * FDROID_ABI_MULTIPLIER
