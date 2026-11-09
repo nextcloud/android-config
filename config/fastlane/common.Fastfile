@@ -13,8 +13,6 @@
 # update plugins
 # bundle exec fastlane update_plugins
 
-require "shellwords"
-
 BUILD_NUMBER_RC_START = 51
 BUILD_NUMBER_FINAL_START = 90
 
@@ -69,7 +67,7 @@ platform :android do
     lane :buildFdroid do
         gradle(
             task: ":app:assembleGenericRelease",
-            flags: "--init-script #{Shellwords.escape(File.expand_path("fdroid.init.gradle"))}",
+            flags: "--init-script fastlane/fdroid.init.gradle",
             properties: { "fdroidAbiSplit" => true }
         )
     end
