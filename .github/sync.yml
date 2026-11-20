@@ -18,6 +18,9 @@ group:
         
       - source: config/root/
         dest: .
+
+      - source: config/skills/
+        dest: .claude/skills/
         
   - repos: |
       nextcloud/android-library@master
