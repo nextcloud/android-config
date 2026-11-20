@@ -150,7 +150,7 @@ platform :android do
     desc "Release phase 1: Run tests and build app"
     lane :releasePhase1 do
 		warnAboutUnusedSecrets()
-		ensure_git_status_clean(show_uncommitted_changes: true)
+		ensureCleanWorkingTree()
 		askForSigningPasswords()
 		builtCommit = last_git_commit[:commit_hash]
 		# may hold signing passwords of releases before signed builds were run without configuration cache
@@ -186,7 +186,7 @@ platform :android do
 	private_lane :releasePhase2Steps do |options|
 		dryRun = options[:dryRun]
 		warnAboutUnusedSecrets()
-		ensure_git_status_clean(show_uncommitted_changes: true)
+		ensureCleanWorkingTree()
 		wouldFail = ensurePushed(dryRun: dryRun)
 		checkArtifactsCommit()
 		versionInfo = getVersionInfo()
@@ -723,6 +723,21 @@ platform :android do
 			{}
 		end
 		{ status: response.code.to_i, scopes: response["X-OAuth-Scopes"], json: json }
+	end
+
+	desc "Fail if the working tree has changes or untracked files. Unlike ensure_git_status_clean, " +
+		"warnings git prints on stderr (e.g. about the untracked cache) are not taken for changes."
+	private_lane :ensureCleanWorkingTree do
+		changes, warnings, status = Open3.capture3("git", "status", "--porcelain")
+		if !status.success?
+			UI.user_error!("git status failed: #{warnings.strip}")
+		end
+		if !changes.strip.empty?
+			UI.user_error!("Working tree is not clean, commit, stash or discard these changes first:\n#{changes.rstrip}")
+		end
+		if !warnings.strip.empty?
+			UI.important("git status warned: #{warnings.strip}")
+		end
 	end
 
 	desc "Check that all local commits are pushed to the upstream branch, ask if the upstream branch has newer commits. " +
