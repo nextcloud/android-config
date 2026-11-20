@@ -48,7 +48,7 @@ INCREMENT_TYPES_USAGE = "type:(rc|final|#{NEXT_VERSION_TYPES.keys.join("|")})"
 GRADLE_BUNDLE_PATH = "app/build/outputs/bundle/gplayRelease/app-gplay-release.aab" # moved to bundlePath after the build
 BUILT_COMMIT_PATH = "app/build/outputs/releaseCommit.txt"
 CHANGELOG_DIR = "metadata/android/en-US/changelogs"
-RELEASE_NOTES_GUIDE = ".claude/skills/suggest-release-notes/release-notes.md"
+RELEASE_NOTES_GUIDE = ".claude/skills/suggest-release-notes/SKILL.md"
 CHANGELOG_MAX_LENGTH = 500 # Google Play limit for release notes
 
 default_platform(:android)
