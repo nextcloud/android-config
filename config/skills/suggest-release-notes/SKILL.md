@@ -1,11 +1,19 @@
 ---
 name: suggest-release-notes
-description: Fill the release changelog file that fastlane incrementVersion created, named after the version code, for a release candidate or final release. Use when asked to write release notes or a changelog for a release.
+description: >
+  Use when asked to write release notes or a changelog for a release candidate
+  or final release. Fills the changelog file that fastlane incrementVersion
+  created, named after the version code, from the merged pull requests of the
+  milestone, crediting external contributors and keeping it within the 500
+  character limit of Google Play.
+license: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+SPDX-License-Identifier: GPL-3.0-or-later
+metadata:
+  author: Nextcloud Android
+  version: "1.0.0"
 ---
-<!--
- ~ SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
- ~ SPDX-License-Identifier: GPL-3.0-or-later
--->
+
 # Suggest release notes
 
 `bundle exec fastlane incrementVersion` creates an empty changelog file named
