@@ -13,6 +13,11 @@
 # update plugins
 # bundle exec fastlane update_plugins
 
+require "json"
+require "net/http"
+require "open3"
+require "tmpdir"
+
 BUILD_NUMBER_RC_START = 51
 BUILD_NUMBER_FINAL_START = 90
 
@@ -26,59 +31,189 @@ FDROID_ABI_MULTIPLIER = 10
 TYPE_ALPHA = "alpha"
 TYPE_RC = "rc"
 TYPE_FINAL = "final"
+# increment types to the next hotfix, minor or major version: version part to increment and resulting build number
+NEXT_VERSION_TYPES = {
+    "hotfix-alpha" => ["patch", 0],
+    "hotfix-rc" => ["patch", BUILD_NUMBER_RC_START],
+    "hotfix-final" => ["patch", BUILD_NUMBER_FINAL_START],
+    "minor-alpha" => ["minor", 0],
+    "minor-rc" => ["minor", BUILD_NUMBER_RC_START],
+    "minor-final" => ["minor", BUILD_NUMBER_FINAL_START],
+    "major-alpha" => ["major", 0],
+}.freeze
+# former names of increment types
+INCREMENT_TYPE_ALIASES = { "patch" => "hotfix-alpha", "minor" => "minor-alpha", "major" => "major-alpha" }.freeze
+INCREMENT_TYPES_USAGE = "type:(rc|final|#{NEXT_VERSION_TYPES.keys.join("|")})"
 
-BUNDLE_PATH = "app/build/outputs/bundle/gplayRelease/app-gplay-release.aab"
+GRADLE_BUNDLE_PATH = "app/build/outputs/bundle/gplayRelease/app-gplay-release.aab" # moved to bundlePath after the build
+BUILT_COMMIT_PATH = "app/build/outputs/releaseCommit.txt"
+CHANGELOG_DIR = "metadata/android/en-US/changelogs"
+RELEASE_NOTES_GUIDE = ".claude/skills/suggest-release-notes/release-notes.md"
+CHANGELOG_MAX_LENGTH = 500 # Google Play limit for release notes
 
 default_platform(:android)
 
 ENV['SUPPLY_UPLOAD_MAX_RETRIES']='10'
 
+# Secrets are not read from the environment but asked for when a release lane starts.
+# Filled by askForSigningPasswords, merged into the app's *_SIGNING_PROPERTIES at build time.
+SIGNING_STORE_PASSWORD_KEY = "android.injected.signing.store.password"
+SIGNING_KEY_PASSWORD_KEY = "android.injected.signing.key.password"
+SIGNING_PASSWORDS = {}
+# signed builds neither store the signing configuration in the configuration cache nor keep it in a daemon.
+# The Kotlin compiler runs inside the build, as a Kotlin daemon started by it would keep the passwords in its
+# environment after the build.
+SIGNED_BUILD_GRADLE_FLAGS = ["--no-configuration-cache", "--no-daemon", "-Pkotlin.compiler.execution.strategy=in-process"]
+
 platform :android do
-	# Usage: fastlane incrementVersion type:(major|minor|patch|rc|final)
-    # For major, minor, and patch: will increment that version number by 1 and set the smaller ones to 0
+	# Usage: fastlane incrementVersion [type:(rc|final|hotfix-alpha|hotfix-rc|hotfix-final|minor-alpha|minor-rc|minor-final|major-alpha)]
     # For rc, final: will set build number to first rc/first final or increment it by 1
-    desc "Increment version code and version name"
+    # For hotfix-*, minor-*, major-*: will increment that version number by 1, set the smaller ones to 0
+    #   and set the build number to the first alpha, rc or final
+    # Without type, the resulting versions of all types are shown to choose from.
+    # rc or final after a final release asks for the next hotfix or minor version, as a released version
+    # cannot get another rc or final.
+    desc "Preparation phase 1: Increment version code and version name"
     lane :incrementVersion do |options|
         versionInfo = getVersionInfo()
         versionComponents = parseVersionCode(versionInfo)
-        newVersionComponents = incrementVersionComponents(versionComponents: versionComponents, type: options[:type])
+        type = options[:type] || chooseIncrementType(versionInfo: versionInfo, versionComponents: versionComponents)
+        if type == TYPE_RC && versionComponents["type"] == TYPE_FINAL
+            type = chooseIncrementType(versionInfo: versionInfo, versionComponents: versionComponents,
+                types: ["hotfix-rc", "minor-rc"])
+        elsif type == TYPE_FINAL && versionComponents["type"] == TYPE_FINAL
+            type = chooseIncrementType(versionInfo: versionInfo, versionComponents: versionComponents,
+                types: ["hotfix-final", "minor-final"])
+        end
+        newVersionComponents = incrementVersionComponents(versionComponents: versionComponents, type: type)
         versionNameGenerated = generateVersionName(newVersionComponents)
         versionCodeGenerated = generateVersionCode(newVersionComponents)
 
-        promptYesNo(text: "Version code: #{versionInfo["versionCode"]} -> #{versionCodeGenerated}\n" +
-                        "Version name: #{versionInfo["versionName"]} -> #{versionNameGenerated}"
+        promptYesNo(
+            title: "Check the new version",
+            text: "Version name: #{versionInfo["versionName"]} -> #{versionNameGenerated}\n" +
+                "Version code: #{versionInfo["versionCode"]} -> #{versionCodeGenerated}",
+            question: "Change the version in app/build.gradle.kts to #{versionNameGenerated}?"
         )
         writeVersions(versionCode: versionCodeGenerated, versionName: versionNameGenerated)
+        summary = ["Version: #{versionInfo["versionName"]} (#{versionInfo["versionCode"]}) -> " +
+            "#{versionNameGenerated} (#{versionCodeGenerated}), changed in app/build.gradle.kts"]
+        if newVersionComponents["type"] == TYPE_ALPHA
+            summary << "Next: commit app/build.gradle.kts"
+        else
+            summary += createChangelogFile(versionCode: versionCodeGenerated)
+        end
+        printAtExit(title: "Version changed", lines: summary)
+    end
+
+    desc "Preparation phase 2: Commit version change and changelog + ask to push"
+    lane :commitVersion do
+        versionInfo = getVersionInfo()
+        checkReleasable(parseVersionCode(versionInfo))
+        checkChangelogFile(versionCode: versionInfo["versionCode"])
+
+        gradleFile = "../app/build.gradle.kts"
+        changelogFile = changelogPath(versionCode: versionInfo["versionCode"])
+        message = "bump version to #{versionInfo["versionName"]}"
+        changelog = File.read(changelogFile, encoding: "UTF-8")
+        promptYesNo(
+            title: "Check the commit and the changelog",
+            text: "Commit message: #{message}\n" +
+                "Files: app/build.gradle.kts, fastlane/#{changelogFile}\n" +
+                "Changelog (#{changelog.strip.length} of #{CHANGELOG_MAX_LENGTH} characters), " +
+                "used for Google Play and the GitHub release:\n\n" +
+                changelog,
+            question: "Commit the version change and this changelog?"
+        )
+        sh("git", "add", "--", gradleFile, changelogFile)
+        sh("git", "commit", "--signoff", "-m", message, "--", gradleFile, changelogFile)
+
+        branch = sh("git", "symbolic-ref", "--short", "HEAD", log: false).strip
+        remote, remoteStatus = Open3.capture2("git", "config", "branch.#{branch}.remote")
+        merge, mergeStatus = Open3.capture2("git", "config", "branch.#{branch}.merge")
+        if remoteStatus.success? && mergeStatus.success?
+            target = [remote.strip, "HEAD:#{merge.strip}"]
+        else
+            target = ["--set-upstream", "origin", "HEAD"]
+        end
+        summary = ["Committed: #{last_git_commit[:abbreviated_commit_hash]} #{message}"]
+        if UI.confirm("Push branch #{branch} now (git push #{target.join(" ")})?")
+            sh("git", "push", *target)
+            summary << "Pushed branch #{branch}"
+        else
+            summary << "Not pushed. Push it before releasePhase2: git push #{target.join(" ")}"
+        end
+        summary << "Next: run releasePhase1"
+        printAtExit(title: "Version committed", lines: summary)
     end
     
-    desc "Run tests and build app"
+    desc "Release phase 1: Run tests and build app"
     lane :releasePhase1 do
+		warnAboutUnusedSecrets()
+		ensure_git_status_clean(show_uncommitted_changes: true)
+		askForSigningPasswords()
+		builtCommit = last_git_commit[:commit_hash]
+		# may hold signing passwords of releases before signed builds were run without configuration cache
+		sh("rm -rf ../.gradle/configuration-cache")
     	sh("rm -rf ../release/ && mkdir -p ../release")
 		gradle(task: 'clean')
         
         versionInfo = getVersionInfo()
         test() # needs to be overwritten in apps
         
-        buildBundle()
-        buildAPKs(code: versionInfo["versionCode"])
+        apks = buildRelease(versionCode: versionInfo["versionCode"])
+		File.write("../#{BUILT_COMMIT_PATH}", builtCommit)
+
+		printAtExit(title: "Release phase 1 finished", lines: [
+			"Version #{versionInfo["versionName"]} (#{versionInfo["versionCode"]}), built from commit #{builtCommit}",
+			"App bundle for Google Play: #{File.expand_path("../#{bundlePath(versionCode: versionInfo["versionCode"])}")}",
+			*apks.map { |apk| "APK: #{File.expand_path(apk[:path])} (signed by #{apk[:signer]})" },
+			"Next: test the APKs, then run releasePhase2DryRun and releasePhase2",
+			"If you find a bug: fix it, commit, and run releasePhase1 again",
+		])
     end
     
     desc "Release phase 2: checks, tag, create GH release, upload to appstores"
 	lane :releasePhase2 do
+		releasePhase2Steps(dryRun: false)
+	end
+
+	desc "Release phase 2 dry run: run all checks, show what would be published"
+	lane :releasePhase2DryRun do
+		releasePhase2Steps(dryRun: true)
+	end
+
+	private_lane :releasePhase2Steps do |options|
+		dryRun = options[:dryRun]
+		warnAboutUnusedSecrets()
 		ensure_git_status_clean(show_uncommitted_changes: true)
+		wouldFail = ensurePushed(dryRun: dryRun)
+		checkArtifactsCommit()
 		versionInfo = getVersionInfo()
 		versionComponents = parseVersionCode(versionInfo)
 		checkReleasable(versionComponents)
+		checkChangelogFile(versionCode: versionInfo["versionCode"])
+		githubToken = askForGithubToken()
 		storeTrack = getPlayStoreTrack(versionComponents)
 		isPrerelease = isPrerelease(versionComponents)
 		tagName = getTagName(versionComponents)
-		preReleaseChecks(versionInfo: versionInfo, tagName: tagName, type: versionComponents["type"], track: storeTrack, isPrerelease: isPrerelease)
-		checkArtifactsExist()
+		preReleaseChecks(versionInfo: versionInfo, tagName: tagName, type: versionComponents["type"], track: storeTrack, isPrerelease: isPrerelease, dryRun: dryRun)
+		checkArtifactsExist(versionCode: versionInfo["versionCode"])
 		repoSpecificChecks(isPrerelease: isPrerelease)  # needs to be overwritten in apps
-		tag(name: tagName)
-		createGithubRelease(name: versionInfo["versionName"], tag: tagName, versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease)
-		uploadToPlayStore(track: storeTrack)
-		uploadToHuawei(versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease)
+		summary = [
+			tag(name: tagName, dryRun: dryRun),
+			createGithubRelease(token: githubToken, name: versionInfo["versionName"], tag: tagName, versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease, dryRun: dryRun),
+			uploadToPlayStore(track: storeTrack, versionCode: versionInfo["versionCode"], dryRun: dryRun),
+			uploadToHuawei(versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease, dryRun: dryRun),
+		].compact
+		if dryRun
+			summary += wouldFail.map { |message| "Would fail in releasePhase2: #{message}" }
+			summary << (wouldFail.empty? ? "Next: run releasePhase2" : "Next: fix the above, then run releasePhase2")
+			printAtExit(title: "Dry run of #{versionInfo["versionName"]} finished, nothing was published", lines: summary)
+		else
+			summary << "Next: check the GitHub release and the release in the Google Play Console"
+			printAtExit(title: "#{versionInfo["versionName"]} released", lines: summary)
+		end
 	end
 
     desc "Build ABI APKs for F-Droid in app/build/fdroid/"
@@ -94,15 +229,16 @@ platform :android do
     lane :printVersionInfo do
         versionInfo = getVersionInfo()
         versionComponents = parseVersionCode(versionInfo)
-        print "Version code: #{versionInfo["versionCode"]}\n"
-        print "Version name: #{versionInfo["versionName"]}\n"
-        print "Major: #{versionComponents["major"]}\n"
-        print "Minor: #{versionComponents["minor"]}\n"
-        print "Patch: #{versionComponents["patch"]}\n"
-        print "Build: #{versionComponents["build"]}\n"
-        fdroidAbiVersionCodes(versionCode: versionInfo["versionCode"]).each do |abi, versionCode|
-            print "F-Droid #{abi} version code: #{versionCode}\n"
-        end
+        printAtExit(title: "Version info", lines: [
+            "Version code: #{versionInfo["versionCode"]}",
+            "Version name: #{versionInfo["versionName"]}",
+            "Major: #{versionComponents["major"]}",
+            "Minor: #{versionComponents["minor"]}",
+            "Patch: #{versionComponents["patch"]}",
+            "Build: #{versionComponents["build"]}",
+        ] + fdroidAbiVersionCodes(versionCode: versionInfo["versionCode"]).map { |abi, versionCode|
+            "F-Droid #{abi} version code: #{versionCode}"
+        })
     end
     
     desc "Upload Alpha version to play store"
@@ -133,6 +269,19 @@ platform :android do
         { "major" => major, "minor" => minor, "patch" => patch, "build" => build, "type" => type }
     end
 
+    desc "Let the user choose the version increment type, showing the resulting version of each"
+    private_lane :chooseIncrementType do |options|
+        types = options[:types] || (options[:versionComponents]["type"] == TYPE_FINAL ?
+            NEXT_VERSION_TYPES.keys :
+            [TYPE_RC, TYPE_FINAL, *NEXT_VERSION_TYPES.keys.grep(/-alpha$/)])
+        choices = types.map do |type|
+            components = incrementVersionComponents(versionComponents: options[:versionComponents].dup, type: type)
+            [generateVersionCode(components), type, generateVersionName(components)]
+        end.sort.to_h { |code, type, name| ["#{type.ljust(12)}  #{name} (#{code})", type] }
+        UI.message("Current version: #{options[:versionInfo]["versionName"]} (#{options[:versionInfo]["versionCode"]})")
+        choices[UI.select("Increment to:", choices.keys)]
+    end
+
     desc "Get version type from build number"
     private_lane :getVersionType do |options|
         build = options[:build]
@@ -148,7 +297,6 @@ platform :android do
 
     desc "Generate versionCode from version components"
     private_lane :generateVersionCode do |versionComponents|
-        puts "Generating version code from #{versionComponents}"
         major = versionComponents["major"]
         minor = versionComponents["minor"]
         patch = versionComponents["patch"]
@@ -168,7 +316,6 @@ platform :android do
     private_lane :generateVersionName do |versionComponents|
         suffix = ""
         buildNumber = versionComponents["build"]
-        puts "Generating version name from #{versionComponents}\n"
         case
           when versionComponents["type"] == TYPE_RC
             rcNumber = (buildNumber - BUILD_NUMBER_RC_START) + 1
@@ -190,6 +337,63 @@ platform :android do
         end
     end
 
+    desc "Get the path of the release bundle for a version code, relative to the repository root"
+    private_lane :bundlePath do |options|
+        "release/nextcloud-#{APP}-gplay-#{options[:versionCode]}.aab"
+    end
+
+    desc "Get the changelog file path for a version code, relative to the fastlane folder"
+    private_lane :changelogPath do |options|
+        "#{CHANGELOG_DIR}/#{options[:versionCode]}.txt"
+    end
+
+    desc "Create empty changelog file for the version code if it does not exist yet, returns what was done and the next steps"
+    private_lane :createChangelogFile do |options|
+        path = changelogPath(versionCode: options[:versionCode])
+        if File.exist?(path)
+            summary = ["Changelog: already exists, fastlane/#{path}", "Next: check the changelog"]
+        else
+            FileUtils.mkdir_p(CHANGELOG_DIR)
+            File.write(path, "")
+            summary = ["Changelog: created empty file fastlane/#{path}"]
+            if File.exist?("../#{RELEASE_NOTES_GUIDE}")
+                summary << "Next: fill the changelog, see #{RELEASE_NOTES_GUIDE}, or run /suggest-release-notes in Claude Code"
+            else
+                summary << "Next: fill the changelog"
+            end
+        end
+        summary << "Next: run commitVersion"
+    end
+
+    desc "Print the lines when fastlane exits, after its summary, so they are the last output"
+    private_lane :printAtExit do |options|
+        at_exit do
+            puts("")
+            UI.header(options[:title])
+            options[:lines].each { |line| UI.important(line) }
+        end
+    end
+
+    desc "Check that the changelog file for the version code exists, is not empty and fits into Google Play"
+    private_lane :checkChangelogFile do |options|
+        path = changelogPath(versionCode: options[:versionCode])
+        if !File.exist?(path)
+            UI.user_error!("Changelog not found: fastlane/#{path}")
+        end
+        # independent of the locale, Google Play counts characters of UTF-8 text
+        text = File.read(path, encoding: "UTF-8")
+        if !text.valid_encoding?
+            UI.user_error!("Changelog is not UTF-8 encoded: fastlane/#{path}")
+        end
+        length = text.strip.length
+        if length == 0
+            UI.user_error!("Changelog is empty: fastlane/#{path}")
+        end
+        if length > CHANGELOG_MAX_LENGTH
+            UI.user_error!("Changelog has #{length} characters, maximum is #{CHANGELOG_MAX_LENGTH}: fastlane/#{path}")
+        end
+    end
+
     desc "Write versions to gradle file"
     private_lane :writeVersions do |options|
         File.open("../app/build.gradle.kts","r+") do |file|
@@ -204,33 +408,36 @@ platform :android do
 
     private_lane :incrementVersionComponents do |options|
         versionComponents = options[:versionComponents]
-        case options[:type]
-        when "major"
-            versionComponents["major"] = versionComponents["major"] + 1
-            versionComponents["minor"] = 0
-            versionComponents["patch"] = 0
-            versionComponents["build"] = 0
-        when "minor"
-            versionComponents["minor"] = versionComponents["minor"] + 1
-            versionComponents["patch"] = 0
-            versionComponents["build"] = 0
-        when "patch"
-            versionComponents["patch"] = versionComponents["patch"] + 1
-            versionComponents["build"] = 0
-        when "rc"
-            if versionComponents["type"] != TYPE_RC
+        type = INCREMENT_TYPE_ALIASES.fetch(options[:type], options[:type])
+        if NEXT_VERSION_TYPES.key?(type)
+            part, build = NEXT_VERSION_TYPES[type]
+            case part
+            when "major"
+                versionComponents["major"] = versionComponents["major"] + 1
+                versionComponents["minor"] = 0
+                versionComponents["patch"] = 0
+            when "minor"
+                versionComponents["minor"] = versionComponents["minor"] + 1
+                versionComponents["patch"] = 0
+            when "patch"
+                versionComponents["patch"] = versionComponents["patch"] + 1
+            end
+            versionComponents["build"] = build
+        elsif type == TYPE_RC
+            if versionComponents["type"] == TYPE_FINAL
+                UI.user_error!("There is no rc after a final release, use hotfix-rc or minor-rc")
+            elsif versionComponents["type"] != TYPE_RC
                 versionComponents["build"] = BUILD_NUMBER_RC_START
             else
                 versionComponents["build"] = versionComponents["build"] + 1
             end
-        when "final"
-            if versionComponents["type"] != TYPE_FINAL
-                versionComponents["build"] = BUILD_NUMBER_FINAL_START
-            else
-                versionComponents["build"] = versionComponents["build"] + 1
+        elsif type == TYPE_FINAL
+            if versionComponents["type"] == TYPE_FINAL
+                UI.user_error!("There is no further final of a released version, use hotfix-final or minor-final")
             end
+            versionComponents["build"] = BUILD_NUMBER_FINAL_START
         else
-            UI.user_error!("Unknown or missing version increment type #{options[:type]}. Usage: incrementVersion type:(major|minor|patch|rc|final)")
+            UI.user_error!("Unknown or missing version increment type #{options[:type]}. Usage: incrementVersion #{INCREMENT_TYPES_USAGE}")
         end
         versionComponents["type"] = getVersionType(build: versionComponents["build"])
         versionComponents
@@ -280,64 +487,291 @@ platform :android do
 		end
 	end
 	
-	desc "Build app bundle"
-	private_lane :buildBundle do
-		gradle(
-			task: 'bundle',
-			flavor: 'Gplay',
-			build_type: 'Release',
-			print_command: false,
-			properties: GRADLE_SIGNING_PROPERTIES
-		)
-	end
-	
-	desc "Build signed APK"
-	private_lane :SignedRelease do |options|
-		gradle(
-			task: 'assemble',
-			flavor: options[:flavor],
-			build_type: 'Release',
-			print_command: false,
-			properties: defined?(APK_SIGNING_PROPERTIES) ? APK_SIGNING_PROPERTIES : GRADLE_SIGNING_PROPERTIES
-			)
-			
-		sh("mv ../app/build/outputs/apk/#{options[:flavor]}/release/*.apk ../release/nextcloud-#{APP}-#{options[:flavor]}-#{options[:versionCode]}.apk")
-	end
-	
-	desc "Build all APKs"
-	private_lane :buildAPKs do |options|
-		SignedRelease(flavor: "generic", versionCode: options[:code])
-		SignedRelease(flavor: "gplay", versionCode: options[:code])
-		
-		if APP == "files"
-			SignedRelease(flavor: "huawei", versionCode: options[:code])
+	desc "Run a signed Gradle build, the signing properties are only in the environment of the Gradle process"
+	private_lane :signedGradleBuild do |options|
+		env = options[:properties].to_h { |key, value| ["ORG_GRADLE_PROJECT_#{key}", value.to_s] }
+		# bash instead of the /bin/sh of gradlew, as dash drops environment variables with dots in their names
+		if !system(env, "bash", "./gradlew", *SIGNED_BUILD_GRADLE_FLAGS, *options[:tasks], chdir: "..")
+			UI.user_error!("Gradle tasks failed: #{options[:tasks].join(" ")}")
 		end
 	end
-	
-	desc "Create release tag"
-	private_lane :tag do |options|
-		tagName = options[:name]
-		add_git_tag(
-		  tag: tagName,
-		  sign: true
-		)
-		push_git_tags(tag: tagName)
+
+	desc "Build signed app bundle and APKs, with one Gradle run per keystore"
+	private_lane :buildRelease do |options|
+		apkFlavors = APP == "files" ? ["generic", "gplay", "huawei"] : ["generic", "gplay"]
+		bundleTasks = ["bundleGplayRelease"]
+		apkTasks = apkFlavors.map { |flavor| "assemble#{flavor.capitalize}Release" }
+		uploadProperties = GRADLE_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS.fetch(:gradle))
+		if defined?(APK_SIGNING_PROPERTIES)
+			signedGradleBuild(tasks: bundleTasks, properties: uploadProperties)
+			signedGradleBuild(tasks: apkTasks, properties: APK_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS.fetch(:apk)))
+		else
+			signedGradleBuild(tasks: bundleTasks + apkTasks, properties: uploadProperties)
+		end
+
+		bundle = bundlePath(versionCode: options[:versionCode])
+		# out of Gradle's output folder, which other builds overwrite
+		sh("mv ../#{GRADLE_BUNDLE_PATH} ../#{bundle}")
+		checkBundleSigned(path: bundle)
+		apkFlavors.map do |flavor|
+			apk = "../release/nextcloud-#{APP}-#{flavor}-#{options[:versionCode]}.apk"
+			sh("mv ../app/build/outputs/apk/#{flavor}/release/*.apk #{apk}")
+			{ path: apk, signer: checkApkSigned(path: apk) }
+		end
 	end
 
-	desc "Upload release artifacts to Google Play"
+	# A build that does not get the signing properties produces unsigned artifacts without failing.
+	desc "Check that the app bundle is signed"
+	private_lane :checkBundleSigned do |options|
+		jarsigner = ENV["JAVA_HOME"] ? File.join(ENV["JAVA_HOME"], "bin", "jarsigner") : "jarsigner"
+		begin
+			output, status = Open3.capture2e(jarsigner, "-J-Duser.language=en", "-verify", "-strict", "../#{options[:path]}")
+		rescue Errno::ENOENT
+			UI.user_error!("jarsigner not found, set JAVA_HOME or add jarsigner to PATH")
+		end
+		# exit code bits: 1 verification failed, 8 wrong key usage, 16 unsigned entries.
+		# 4 (certificate chain not validated) is expected for self-signed upload keys.
+		if status.exitstatus.nil? || (status.exitstatus & (1 | 8 | 16)) != 0
+			UI.user_error!("App bundle is not signed correctly: #{options[:path]}\n#{output.strip}")
+		end
+	end
+
+	desc "Check that an APK is signed, returns the certificate DN of the signer"
+	private_lane :checkApkSigned do |options|
+		sdk = ENV["ANDROID_HOME"] || ENV["ANDROID_SDK_ROOT"]
+		if sdk.nil? && File.exist?("../local.properties")
+			sdk = File.read("../local.properties")[/^sdk\.dir=(.*)$/, 1]
+		end
+		apksigner = sdk && Dir.glob(File.join(sdk, "build-tools", "*", "apksigner"))
+			.max_by { |path| File.basename(File.dirname(path)).split(/[.-]/).map(&:to_i) }
+		if apksigner.nil?
+			UI.user_error!("apksigner not found, set ANDROID_HOME")
+		end
+		output, status = Open3.capture2e(apksigner, "verify", "--print-certs", options[:path])
+		if !status.success?
+			UI.user_error!("APK is not signed correctly: #{options[:path]}\n#{output.strip}")
+		end
+		signer = output[/certificate DN: (.*)$/, 1].to_s.strip
+		UI.message("#{File.basename(options[:path])}: signed by #{signer}")
+		signer
+	end
+
+	desc "Ask for keystore passwords (upload keystore, and APK keystore if APK_SIGNING_PROPERTIES is defined)"
+	private_lane :askForSigningPasswords do
+		SIGNING_PASSWORDS[:gradle] = {
+			SIGNING_STORE_PASSWORD_KEY => promptSecret(text: "Enter Upload keystore password:"),
+			SIGNING_KEY_PASSWORD_KEY => promptSecret(text: "Enter Upload key password:"),
+		}
+		checkSigningPasswords(name: "Upload", properties: GRADLE_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:gradle]))
+		if defined?(APK_SIGNING_PROPERTIES)
+			SIGNING_PASSWORDS[:apk] = {
+				SIGNING_STORE_PASSWORD_KEY => promptSecret(text: "Enter APK keystore password:"),
+				SIGNING_KEY_PASSWORD_KEY => promptSecret(text: "Enter APK key password:"),
+			}
+			checkSigningPasswords(name: "APK", properties: APK_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:apk]))
+		end
+	end
+
+	desc "Check keystore password, key alias and key password, so mistakes are found before the build"
+	private_lane :checkSigningPasswords do |options|
+		properties = options[:properties]
+		storeFile = File.expand_path(properties["android.injected.signing.store.file"].to_s, "..")
+		if !File.file?(storeFile)
+			UI.user_error!("#{options[:name]} keystore not found: #{storeFile}")
+		end
+		# Loads the key like the signing does. keytool cannot be used, it ignores the key password of PKCS12 keystores.
+		source = <<~JAVA
+			import java.io.File;
+			import java.security.KeyStore;
+
+			public class CheckKeystore {
+			    public static void main(String[] args) {
+			        try {
+			            KeyStore keyStore = KeyStore.getInstance(new File(args[0]),
+			                System.getenv("FASTLANE_CHECK_STORE_PASSWORD").toCharArray());
+			            if (!keyStore.isKeyEntry(args[1])) {
+			                System.err.println("Key alias not found: " + args[1]);
+			                System.exit(1);
+			            }
+			            keyStore.getKey(args[1], System.getenv("FASTLANE_CHECK_KEY_PASSWORD").toCharArray());
+			        } catch (Exception e) {
+			            System.err.println(e);
+			            System.exit(1);
+			        }
+			    }
+			}
+		JAVA
+		java = ENV["JAVA_HOME"] ? File.join(ENV["JAVA_HOME"], "bin", "java") : "java"
+		# passwords are handed over as environment of the java process only, so they do not show up in ps
+		env = {
+			"FASTLANE_CHECK_STORE_PASSWORD" => properties[SIGNING_STORE_PASSWORD_KEY],
+			"FASTLANE_CHECK_KEY_PASSWORD" => properties[SIGNING_KEY_PASSWORD_KEY],
+		}
+		output = nil
+		status = nil
+		Dir.mktmpdir do |dir|
+			sourceFile = File.join(dir, "CheckKeystore.java")
+			File.write(sourceFile, source)
+			begin
+				output, status = Open3.capture2e(env, java, sourceFile, storeFile,
+					properties["android.injected.signing.key.alias"].to_s)
+			rescue Errno::ENOENT
+				UI.user_error!("java not found, set JAVA_HOME or add java to PATH")
+			end
+		end
+		if !status.success?
+			UI.user_error!("#{options[:name]} keystore check failed: #{output.lines.last.to_s.strip}")
+		end
+	end
+
+	desc "Warn about passwords and tokens set in the environment, which are asked for instead"
+	private_lane :warnAboutUnusedSecrets do
+		names = ENV.keys.grep(/^FASTLANE_.+_(PASSWORD|GITHUB_API_TOKEN)$/).sort
+		if !names.empty?
+			UI.important("Not used, the values are asked for instead. Remove them from your shell configuration: #{names.join(", ")}")
+		end
+	end
+
+	desc "Ask for GitHub API token and check that it can push to the repository"
+	private_lane :askForGithubToken do
+		token = promptSecret(text: "Enter GitHub API token:").strip
+		result = githubGet(token: token, path: "/repos/#{REPO}")
+		if result[:status] != 200
+			UI.user_error!("GitHub API token was rejected (HTTP #{result[:status]})")
+		end
+		# permissions of the account, the token may have less
+		if result[:json].dig("permissions", "push") != true
+			UI.user_error!("Your GitHub account has no push permission for #{REPO}")
+		end
+		if result[:scopes].nil?
+			# fine-grained tokens do not report their permissions
+			UI.important("Permissions of fine-grained tokens cannot be checked. The token needs read and write access to Contents of #{REPO}.")
+		else
+			scopes = result[:scopes].split(",").map(&:strip)
+			if (scopes & ["repo", "public_repo"]).empty?
+				UI.user_error!("GitHub API token needs the scope repo or public_repo, it has: #{scopes.empty? ? "none" : scopes.join(", ")}")
+			end
+		end
+		token
+	end
+
+	desc "GET request to the GitHub API. Unlike fastlane's github_api, it returns the token scopes and never prints the token."
+	private_lane :githubGet do |options|
+		uri = URI("https://api.github.com#{options[:path]}")
+		request = Net::HTTP::Get.new(uri)
+		request["Authorization"] = "Bearer #{options[:token]}"
+		request["Accept"] = "application/vnd.github+json"
+		begin
+			response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
+		rescue StandardError => e
+			UI.user_error!("GitHub API request failed: #{e.class}")
+		end
+		json = begin
+			JSON.parse(response.body.to_s)
+		rescue JSON::ParserError
+			{}
+		end
+		{ status: response.code.to_i, scopes: response["X-OAuth-Scopes"], json: json }
+	end
+
+	desc "Check that all local commits are pushed to the upstream branch, ask if the upstream branch has newer commits. " +
+		"Returns the problems a dry run only warns about."
+	private_lane :ensurePushed do |options|
+		sh("git fetch --quiet")
+		upstream, status = Open3.capture2("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+		if !status.success?
+			message = "Current branch has no upstream branch"
+			dryRunOr(dryRun: options[:dryRun], message: message)
+			next [message]
+		end
+		problems = []
+		upstream = upstream.strip
+		unpushed = sh("git rev-list --count #{upstream}..HEAD", log: false).strip.to_i
+		if unpushed > 0
+			problems << "#{unpushed} commit(s) not pushed to #{upstream}"
+			dryRunOr(dryRun: options[:dryRun], message: problems.last)
+		end
+		missing = sh("git rev-list --count HEAD..#{upstream}", log: false).strip.to_i
+		if missing > 0
+			promptYesNo(
+				title: "#{upstream} has newer commits",
+				text: "#{missing} commit(s) on #{upstream} are not in the local branch and will not be part of this release.",
+				question: "Release without these commits?"
+			)
+		end
+		problems
+	end
+
+	desc "Fail with the message, or only warn about it in a dry run"
+	private_lane :dryRunOr do |options|
+		if options[:dryRun]
+			UI.important("[dry run] would fail: #{options[:message]}")
+		else
+			UI.user_error!(options[:message])
+		end
+	end
+
+	desc "Check that the release artifacts were built from the current commit"
+	private_lane :checkArtifactsCommit do
+		if !File.exist?("../#{BUILT_COMMIT_PATH}")
+			UI.user_error!("#{BUILT_COMMIT_PATH} not found, run releasePhase1 first")
+		end
+		builtCommit = File.read("../#{BUILT_COMMIT_PATH}").strip
+		headCommit = last_git_commit[:commit_hash]
+		if builtCommit != headCommit
+			UI.user_error!("Artifacts were built from #{builtCommit}, but HEAD is #{headCommit}. Run releasePhase1 again.")
+		end
+	end
+
+	desc "Create and push release tag, returns a summary. A tag on HEAD from a failed earlier run is reused."
+	private_lane :tag do |options|
+		tagName = options[:name]
+		existing, status = Open3.capture2("git", "rev-parse", "--quiet", "--verify", "refs/tags/#{tagName}^{commit}")
+		if status.success?
+			if existing.strip != last_git_commit[:commit_hash]
+				UI.user_error!("Tag #{tagName} already exists on another commit: #{existing.strip}")
+			end
+			UI.important("Tag #{tagName} already exists on HEAD, it is reused")
+			summary = "Tag: #{tagName} (already existed on HEAD)"
+		elsif options[:dryRun]
+			UI.important("[dry run] would create signed tag #{tagName} on HEAD")
+			summary = "Tag: #{tagName} would be created on HEAD and pushed"
+		else
+			add_git_tag(
+			  tag: tagName,
+			  sign: true
+			)
+			summary = "Tag: #{tagName} created on HEAD"
+		end
+		if options[:dryRun]
+			UI.important("[dry run] would push tag #{tagName}")
+		else
+			push_git_tags(tag: tagName)
+			summary += ", pushed"
+		end
+		summary
+	end
+
+	desc "Upload release artifacts to Google Play, returns a summary"
 	private_lane :uploadToPlayStore do |options|
+		if options[:dryRun]
+			UI.important("[dry run] would upload #{bundlePath(versionCode: options[:versionCode])} to Google Play track #{options[:track]}")
+			next "Google Play: bundle would be uploaded to track #{options[:track]}"
+		end
 		upload_to_play_store(
 			skip_upload_images: true,
 			skip_upload_apk: true,
 			track: options[:track],
-			aab: BUNDLE_PATH
+			aab: bundlePath(versionCode: options[:versionCode])
 		)
+		"Google Play: bundle uploaded to track #{options[:track]}"
 	end
 		
 	desc "Check if release artifacts exist"
-	private_lane :checkArtifactsExist do
-		if !File.exist?("../#{BUNDLE_PATH}")
-			UI.user_error!("Bundle not found at #{BUNDLE_PATH}")
+	private_lane :checkArtifactsExist do |options|
+		bundle = bundlePath(versionCode: options[:versionCode])
+		if !File.exist?("../#{bundle}")
+			UI.user_error!("Bundle not found at #{bundle}, run releasePhase1 first")
 		end
 	end
 	
@@ -346,30 +780,57 @@ platform :android do
 		versionInfo = options[:versionInfo]
 		tagName = options[:tagName]
 		currentBranch = git_branch()
-		text = "Version code: #{versionInfo["versionCode"]}\n" +
-				"Version name: #{versionInfo["versionName"]}\n" +
+		text = "Version name: #{versionInfo["versionName"]}\n" +
+				"Version code: #{versionInfo["versionCode"]}\n" +
 				"Current branch: #{currentBranch}\n" +
 				"Version type: #{options[:type]}\n" +
 				"Tag: #{tagName}\n" +
 				"Track: #{options[:track]}\n" +
 				"Prerelease: #{options[:isPrerelease]}"
-		promptYesNo(text: text)
+		if options[:dryRun]
+			promptYesNo(title: "Check the release (dry run, nothing is published)", text: text,
+				question: "Run the dry run for this release?")
+		else
+			promptYesNo(title: "Check the release, it is published after this question", text: text,
+				question: "Publish #{versionInfo["versionName"]} now (tag, GitHub release, store uploads)?")
+		end
 	end
 
+	desc "Create GitHub release, returns a summary. A release from a failed earlier run is kept."
 	private_lane :createGithubRelease do |options|
-		set_github_release(
-			repository_name: REPO,
-			api_token: ENV["FASTLANE_NEXTCLOUD_GITHUB_API_TOKEN"],
-			name: options[:name],
-			is_prerelease: options[:isPrerelease],
-			tag_name: options[:tag],
-			description: (File.read("metadata/android/en-US/changelogs/#{options[:versionCode]}.txt") rescue "No changelog provided"),
-			upload_assets: Dir.glob(File.expand_path("../release/*.apk"))
-		)
+		existing = githubGet(token: options[:token], path: "/repos/#{REPO}/releases/tags/#{options[:tag]}")
+		case existing[:status]
+		when 200
+			UI.important("GitHub release for #{options[:tag]} already exists, it is not changed: #{existing[:json]["html_url"]}")
+			"GitHub release: #{existing[:json]["html_url"]} (already existed, not changed)"
+		when 404
+			if options[:dryRun]
+				assets = Dir.glob(File.expand_path("../release/*.apk")).map { |path| File.basename(path) }
+				UI.important("[dry run] would create GitHub release \"#{options[:name]}\" for tag #{options[:tag]}, " +
+					"prerelease: #{options[:isPrerelease]}, assets: #{assets.empty? ? "none" : assets.join(", ")}")
+				next "GitHub release: \"#{options[:name]}\" would be created with #{assets.length} APK(s)"
+			end
+			set_github_release(
+				repository_name: REPO,
+				api_token: options[:token],
+				name: options[:name],
+				is_prerelease: options[:isPrerelease],
+				tag_name: options[:tag],
+				description: File.read(changelogPath(versionCode: options[:versionCode]), encoding: "UTF-8"),
+				upload_assets: Dir.glob(File.expand_path("../release/*.apk"))
+			)
+			"GitHub release: #{lane_context[SharedValues::SET_GITHUB_RELEASE_HTML_LINK]}"
+		else
+			UI.user_error!("Could not check for an existing GitHub release (HTTP #{existing[:status]})")
+		end
 	end
 	
 	private_lane :uploadToHuawei do |options|
 		if APP == "files" && options[:isPrerelease] == false
+			if options[:dryRun]
+				UI.important("[dry run] would upload release/nextcloud-#{APP}-huawei-#{options[:versionCode]}.apk to Huawei AppGallery")
+				next "Huawei AppGallery: APK would be uploaded and submitted for review"
+			end
 			huawei_appgallery_connect(
 				client_id: ENV["FASTLANE_NEXTCLOUD_HUAWEI_CLIENT_ID"],
 				client_secret: ENV["FASTLANE_NEXTCLOUD_HUAWEI_CLIENT_SECRET"],
@@ -378,14 +839,28 @@ platform :android do
 				submit_for_review: true,
 				delay_before_submit_for_review: 30,
 			)
+			"Huawei AppGallery: APK uploaded and submitted for review"
 		end
 	end
 end
 
+desc "Show what to check and ask a yes/no question, abort on no"
 private_lane :promptYesNo do |options|
-    puts "\n" + options[:text]
-    answer = prompt(text: "is this okay?", boolean: true)
-    if !answer
+    puts("")
+    UI.header(options[:title] || "Check")
+    # leading line break, so all lines of the text start at the beginning of a line, after fastlane's timestamp line
+    puts("\n" + options[:text])
+    puts("")
+    # UI.confirm instead of the prompt action, whose step header would separate the question from the text
+    if !UI.confirm(options[:question] || "Is this okay?")
         UI.user_error!("Aborting")
     end
+end
+
+private_lane :promptSecret do |options|
+    value = prompt(text: options[:text], secure_text: true).to_s
+    if value.strip.empty?
+        UI.user_error!("No value entered for: #{options[:text]}")
+    end
+    value
 end
