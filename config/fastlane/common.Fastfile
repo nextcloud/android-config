@@ -563,22 +563,30 @@ platform :android do
 			SIGNING_STORE_PASSWORD_KEY => promptSecret(text: "Enter Upload keystore password:"),
 			SIGNING_KEY_PASSWORD_KEY => promptSecret(text: "Enter Upload key password:"),
 		}
-		checkSigningPasswords(name: "Upload", properties: GRADLE_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:gradle]))
+		checkSigningPasswords(name: "Upload", constant: "GRADLE_SIGNING_PROPERTIES", properties: GRADLE_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:gradle]))
 		if defined?(APK_SIGNING_PROPERTIES)
 			SIGNING_PASSWORDS[:apk] = {
 				SIGNING_STORE_PASSWORD_KEY => promptSecret(text: "Enter APK keystore password:"),
 				SIGNING_KEY_PASSWORD_KEY => promptSecret(text: "Enter APK key password:"),
 			}
-			checkSigningPasswords(name: "APK", properties: APK_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:apk]))
+			checkSigningPasswords(name: "APK", constant: "APK_SIGNING_PROPERTIES", properties: APK_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:apk]))
 		end
 	end
 
 	desc "Check keystore password, key alias and key password, so mistakes are found before the build"
 	private_lane :checkSigningPasswords do |options|
 		properties = options[:properties]
-		storeFile = File.expand_path(properties["android.injected.signing.store.file"].to_s, "..")
+		# the app's Fastfile reads keystore file and key alias from environment variables, listed in its header comment
+		hint = "Set the environment variable that #{options[:constant]} in fastlane/Fastfile reads for it, " +
+			"e.g. in your shell configuration, see the comment at the top of fastlane/Fastfile."
+		{ "android.injected.signing.store.file" => "file", "android.injected.signing.key.alias" => "key alias" }.each do |key, what|
+			if properties[key].to_s.strip.empty?
+				UI.user_error!("#{options[:name]} keystore #{what} is not set (#{key}). #{hint}")
+			end
+		end
+		storeFile = File.expand_path(properties["android.injected.signing.store.file"], "..")
 		if !File.file?(storeFile)
-			UI.user_error!("#{options[:name]} keystore not found: #{storeFile}")
+			UI.user_error!("#{options[:name]} keystore not found: #{storeFile}. Check the path. #{hint}")
 		end
 		# Loads the key like the signing does. keytool cannot be used, it ignores the key password of PKCS12 keystores.
 		source = <<~JAVA
