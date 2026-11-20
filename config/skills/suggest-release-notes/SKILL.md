@@ -20,7 +20,7 @@ metadata:
 after the version code, usually
 `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`, and prints its
 path. Its content is used as release notes on Google Play and as description
-of the GitHub release. `releasePhase2` refuses to release if the file is empty
+of the GitHub release. `release` refuses to release if the file is empty
 or longer than 500 characters.
 
 These instructions describe how to fill that file. They are written so that an

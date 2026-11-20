@@ -73,7 +73,7 @@ platform :android do
     # Without type, the resulting versions of all types are shown to choose from.
     # rc or final after a final release asks for the next hotfix or minor version, as a released version
     # cannot get another rc or final.
-    desc "Preparation phase 1: Increment version code and version name"
+    desc "Increment version code and version name"
     lane :incrementVersion do |options|
         versionInfo = getVersionInfo()
         versionComponents = parseVersionCode(versionInfo)
@@ -106,7 +106,7 @@ platform :android do
         printAtExit(title: "Version changed", lines: summary)
     end
 
-    desc "Preparation phase 2: Commit version change and changelog, releasePhase2 pushes them"
+    desc "Commit version change and changelog (push is done later in release lane)"
     lane :commitVersion do
         versionInfo = getVersionInfo()
         checkReleasable(parseVersionCode(versionInfo))
@@ -130,13 +130,13 @@ platform :android do
 
         printAtExit(title: "Version committed", lines: [
             "Committed: #{last_git_commit[:abbreviated_commit_hash]} #{message}",
-            "Not pushed: releasePhase2 pushes the branch after releasePhase1 has tested and built it",
-            "Next: run releasePhase1",
+            "Not pushed: the release lane pushes the branch after the build lane has tested and built it",
+            "Next: run build",
         ])
     end
     
-    desc "Release phase 1: Run tests and build app"
-    lane :releasePhase1 do
+    desc "Run tests and build app"
+    lane :build do
 		warnAboutUnusedSecrets()
 		ensureCleanWorkingTree()
 		askForSigningPasswords()
@@ -152,26 +152,26 @@ platform :android do
         apks = buildRelease(versionCode: versionInfo["versionCode"])
 		File.write("../#{BUILT_COMMIT_PATH}", builtCommit)
 
-		printAtExit(title: "Release phase 1 finished", lines: [
+		printAtExit(title: "Build finished", lines: [
 			"Version #{versionInfo["versionName"]} (#{versionInfo["versionCode"]}), built from commit #{builtCommit}",
 			"App bundle for Google Play: #{File.expand_path("../#{bundlePath(versionCode: versionInfo["versionCode"])}")}",
 			*apks.map { |apk| "APK: #{File.expand_path(apk[:path])} (signed by #{apk[:signer]})" },
-			"Next: test the APKs, then run releasePhase2DryRun and releasePhase2",
-			"If you find a bug: fix it, commit, and run releasePhase1 again",
+			"Next: test the APKs, then run releaseDryRun and release",
+			"If you find a bug: fix it, commit, and run build again",
 		])
     end
     
-    desc "Release phase 2: checks, tag, create GH release, upload to appstores"
-	lane :releasePhase2 do
-		releasePhase2Steps(dryRun: false)
+    desc "Checks, tag, create GH release, upload to appstores"
+	lane :release do
+		releaseSteps(dryRun: false)
 	end
 
-	desc "Release phase 2 dry run: run all checks, show what would be published"
-	lane :releasePhase2DryRun do
-		releasePhase2Steps(dryRun: true)
+	desc "Run all checks, show what would be published"
+	lane :releaseDryRun do
+		releaseSteps(dryRun: true)
 	end
 
-	private_lane :releasePhase2Steps do |options|
+	private_lane :releaseSteps do |options|
 		dryRun = options[:dryRun]
 		warnAboutUnusedSecrets()
 		ensureCleanWorkingTree()
@@ -197,8 +197,8 @@ platform :android do
 			uploadToHuawei(versionCode: versionInfo["versionCode"], credentials: huaweiCredentials, dryRun: dryRun),
 		].compact
 		if dryRun
-			summary += push[:problems].map { |message| "Would fail in releasePhase2: #{message}" }
-			summary << (push[:problems].empty? ? "Next: run releasePhase2" : "Next: fix the above, then run releasePhase2")
+			summary += push[:problems].map { |message| "Would fail in release: #{message}" }
+			summary << (push[:problems].empty? ? "Next: run release" : "Next: fix the above, then run release")
 			printAtExit(title: "Dry run of #{versionInfo["versionName"]} finished, nothing was published", lines: summary)
 		else
 			summary << "Next: check the GitHub release and the release in the Google Play Console"
@@ -799,12 +799,12 @@ platform :android do
 	desc "Check that the release artifacts were built from the current commit"
 	private_lane :checkArtifactsCommit do
 		if !File.exist?("../#{BUILT_COMMIT_PATH}")
-			UI.user_error!("#{BUILT_COMMIT_PATH} not found, run releasePhase1 first")
+			UI.user_error!("#{BUILT_COMMIT_PATH} not found, run build first")
 		end
 		builtCommit = File.read("../#{BUILT_COMMIT_PATH}").strip
 		headCommit = last_git_commit[:commit_hash]
 		if builtCommit != headCommit
-			UI.user_error!("Artifacts were built from #{builtCommit}, but HEAD is #{headCommit}. Run releasePhase1 again.")
+			UI.user_error!("Artifacts were built from #{builtCommit}, but HEAD is #{headCommit}. Run build again.")
 		end
 	end
 
@@ -856,7 +856,7 @@ platform :android do
 	private_lane :checkArtifactsExist do |options|
 		bundle = bundlePath(versionCode: options[:versionCode])
 		if !File.exist?("../#{bundle}")
-			UI.user_error!("Bundle not found at #{bundle}, run releasePhase1 first")
+			UI.user_error!("Bundle not found at #{bundle}, run build first")
 		end
 	end
 	
