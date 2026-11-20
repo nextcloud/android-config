@@ -196,6 +196,7 @@ platform :android do
 		githubToken = askForGithubToken()
 		storeTrack = getPlayStoreTrack(versionComponents)
 		isPrerelease = isPrerelease(versionComponents)
+		huaweiCredentials = uploadsToHuawei(isPrerelease: isPrerelease) ? askForHuaweiCredentials() : nil
 		tagName = getTagName(versionComponents)
 		preReleaseChecks(versionInfo: versionInfo, tagName: tagName, type: versionComponents["type"], track: storeTrack, isPrerelease: isPrerelease, dryRun: dryRun)
 		checkArtifactsExist(versionCode: versionInfo["versionCode"])
@@ -204,7 +205,7 @@ platform :android do
 			tag(name: tagName, dryRun: dryRun),
 			createGithubRelease(token: githubToken, name: versionInfo["versionName"], tag: tagName, versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease, dryRun: dryRun),
 			uploadToPlayStore(track: storeTrack, versionCode: versionInfo["versionCode"], dryRun: dryRun),
-			uploadToHuawei(versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease, dryRun: dryRun),
+			uploadToHuawei(versionCode: versionInfo["versionCode"], credentials: huaweiCredentials, dryRun: dryRun),
 		].compact
 		if dryRun
 			summary += wouldFail.map { |message| "Would fail in releasePhase2: #{message}" }
@@ -626,7 +627,7 @@ platform :android do
 
 	desc "Warn about passwords and tokens set in the environment, which are asked for instead"
 	private_lane :warnAboutUnusedSecrets do
-		names = ENV.keys.grep(/^FASTLANE_.+_(PASSWORD|GITHUB_API_TOKEN)$/).sort
+		names = ENV.keys.grep(/^FASTLANE_.+_(PASSWORD|GITHUB_API_TOKEN|HUAWEI_CLIENT_ID|HUAWEI_CLIENT_SECRET|HUAWEI_APP_ID)$/).sort
 		if !names.empty?
 			UI.important("Not used, the values are asked for instead. Remove them from your shell configuration: #{names.join(", ")}")
 		end
@@ -653,6 +654,37 @@ platform :android do
 			end
 		end
 		token
+	end
+
+	desc "Ask for the Huawei AppGallery Connect API client and check it before anything is published. " +
+		"The app ID is taken from HUAWEI_APP_ID in the app's Fastfile, or asked for."
+	private_lane :askForHuaweiCredentials do
+		clientId = promptSecret(text: "Enter Huawei AppGallery Connect API client ID:").strip
+		clientSecret = promptSecret(text: "Enter Huawei AppGallery Connect API client secret:").strip
+		appId = defined?(HUAWEI_APP_ID) ? HUAWEI_APP_ID : prompt(text: "Enter Huawei AppGallery app ID:").to_s.strip
+		if appId.empty?
+			UI.user_error!("No Huawei AppGallery app ID entered")
+		end
+		# same request the huawei_appgallery_connect plugin makes to get an access token
+		uri = URI("https://connect-api.cloud.huawei.com/api/oauth2/v1/token")
+		request = Net::HTTP::Post.new(uri, "Content-Type" => "application/json")
+		request.body = { client_id: clientId, client_secret: clientSecret, grant_type: "client_credentials" }.to_json
+		begin
+			response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
+		rescue StandardError => e
+			UI.user_error!("Huawei AppGallery Connect request failed: #{e.class}")
+		end
+		json = begin
+			JSON.parse(response.body.to_s)
+		rescue JSON::ParserError
+			{}
+		end
+		# a rejected client is answered with HTTP 200 and an error in "ret" instead of a token
+		if json["access_token"].nil?
+			UI.user_error!("Huawei AppGallery Connect rejected the API client ID or secret: " +
+				"#{json.dig("ret", "msg") || "HTTP #{response.code}"}")
+		end
+		{ clientId: clientId, clientSecret: clientSecret, appId: appId }
 	end
 
 	desc "GET request to the GitHub API. Unlike fastlane's github_api, it returns the token scopes and never prints the token."
@@ -825,22 +857,29 @@ platform :android do
 		end
 	end
 	
+	desc "Whether the release is uploaded to Huawei AppGallery: final releases of Files"
+	private_lane :uploadsToHuawei do |options|
+		APP == "files" && options[:isPrerelease] == false
+	end
+
+	desc "Upload the Huawei APK to Huawei AppGallery, if credentials were asked for"
 	private_lane :uploadToHuawei do |options|
-		if APP == "files" && options[:isPrerelease] == false
-			if options[:dryRun]
-				UI.important("[dry run] would upload release/nextcloud-#{APP}-huawei-#{options[:versionCode]}.apk to Huawei AppGallery")
-				next "Huawei AppGallery: APK would be uploaded and submitted for review"
-			end
-			huawei_appgallery_connect(
-				client_id: ENV["FASTLANE_NEXTCLOUD_HUAWEI_CLIENT_ID"],
-				client_secret: ENV["FASTLANE_NEXTCLOUD_HUAWEI_CLIENT_SECRET"],
-				app_id: ENV["FASTLANE_NEXTCLOUD_HUAWEI_APP_ID"],
-				apk_path: "release/nextcloud-#{APP}-huawei-#{options[:versionCode]}.apk",
-				submit_for_review: true,
-				delay_before_submit_for_review: 30,
-			)
-			"Huawei AppGallery: APK uploaded and submitted for review"
+		credentials = options[:credentials]
+		next nil if credentials.nil?
+		apk = "release/nextcloud-#{APP}-huawei-#{options[:versionCode]}.apk"
+		if options[:dryRun]
+			UI.important("[dry run] would upload #{apk} to Huawei AppGallery")
+			next "Huawei AppGallery: APK would be uploaded and submitted for review"
 		end
+		huawei_appgallery_connect(
+			client_id: credentials[:clientId],
+			client_secret: credentials[:clientSecret],
+			app_id: credentials[:appId],
+			apk_path: apk,
+			submit_for_review: true,
+			delay_before_submit_for_review: 30,
+		)
+		"Huawei AppGallery: APK uploaded and submitted for review"
 	end
 end
 
