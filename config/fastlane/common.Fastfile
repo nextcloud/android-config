@@ -559,22 +559,27 @@ platform :android do
 
 	desc "Ask for keystore passwords (upload keystore, and APK keystore if APK_SIGNING_PROPERTIES is defined)"
 	private_lane :askForSigningPasswords do
+		# before any password is asked for, so a missing setting does not waste the typing
+		checkSigningSettings(name: "Upload", constant: "GRADLE_SIGNING_PROPERTIES", properties: GRADLE_SIGNING_PROPERTIES)
+		if defined?(APK_SIGNING_PROPERTIES)
+			checkSigningSettings(name: "APK", constant: "APK_SIGNING_PROPERTIES", properties: APK_SIGNING_PROPERTIES)
+		end
 		SIGNING_PASSWORDS[:gradle] = {
 			SIGNING_STORE_PASSWORD_KEY => promptSecret(text: "Enter Upload keystore password:"),
 			SIGNING_KEY_PASSWORD_KEY => promptSecret(text: "Enter Upload key password:"),
 		}
-		checkSigningPasswords(name: "Upload", constant: "GRADLE_SIGNING_PROPERTIES", properties: GRADLE_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:gradle]))
+		checkSigningPasswords(name: "Upload", properties: GRADLE_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:gradle]))
 		if defined?(APK_SIGNING_PROPERTIES)
 			SIGNING_PASSWORDS[:apk] = {
 				SIGNING_STORE_PASSWORD_KEY => promptSecret(text: "Enter APK keystore password:"),
 				SIGNING_KEY_PASSWORD_KEY => promptSecret(text: "Enter APK key password:"),
 			}
-			checkSigningPasswords(name: "APK", constant: "APK_SIGNING_PROPERTIES", properties: APK_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:apk]))
+			checkSigningPasswords(name: "APK", properties: APK_SIGNING_PROPERTIES.merge(SIGNING_PASSWORDS[:apk]))
 		end
 	end
 
-	desc "Check keystore password, key alias and key password, so mistakes are found before the build"
-	private_lane :checkSigningPasswords do |options|
+	desc "Check that keystore file and key alias are set and the keystore exists"
+	private_lane :checkSigningSettings do |options|
 		properties = options[:properties]
 		# the app's Fastfile reads keystore file and key alias from environment variables, listed in its header comment
 		hint = "Set the environment variable that #{options[:constant]} in fastlane/Fastfile reads for it, " +
@@ -588,6 +593,12 @@ platform :android do
 		if !File.file?(storeFile)
 			UI.user_error!("#{options[:name]} keystore not found: #{storeFile}. Check the path. #{hint}")
 		end
+	end
+
+	desc "Check keystore password, key alias and key password, so mistakes are found before the build"
+	private_lane :checkSigningPasswords do |options|
+		properties = options[:properties]
+		storeFile = File.expand_path(properties["android.injected.signing.store.file"], "..")
 		# Loads the key like the signing does. keytool cannot be used, it ignores the key password of PKCS12 keystores.
 		source = <<~JAVA
 			import java.io.File;
