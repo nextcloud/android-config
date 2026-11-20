@@ -106,7 +106,7 @@ platform :android do
         printAtExit(title: "Version changed", lines: summary)
     end
 
-    desc "Preparation phase 2: Commit version change and changelog + ask to push"
+    desc "Preparation phase 2: Commit version change and changelog, releasePhase2 pushes them"
     lane :commitVersion do
         versionInfo = getVersionInfo()
         checkReleasable(parseVersionCode(versionInfo))
@@ -128,23 +128,11 @@ platform :android do
         sh("git", "add", "--", gradleFile, changelogFile)
         sh("git", "commit", "--signoff", "-m", message, "--", gradleFile, changelogFile)
 
-        branch = sh("git", "symbolic-ref", "--short", "HEAD", log: false).strip
-        remote, remoteStatus = Open3.capture2("git", "config", "branch.#{branch}.remote")
-        merge, mergeStatus = Open3.capture2("git", "config", "branch.#{branch}.merge")
-        if remoteStatus.success? && mergeStatus.success?
-            target = [remote.strip, "HEAD:#{merge.strip}"]
-        else
-            target = ["--set-upstream", "origin", "HEAD"]
-        end
-        summary = ["Committed: #{last_git_commit[:abbreviated_commit_hash]} #{message}"]
-        if UI.confirm("Push branch #{branch} now (git push #{target.join(" ")})?")
-            sh("git", "push", *target)
-            summary << "Pushed branch #{branch}"
-        else
-            summary << "Not pushed. Push it before releasePhase2: git push #{target.join(" ")}"
-        end
-        summary << "Next: run releasePhase1"
-        printAtExit(title: "Version committed", lines: summary)
+        printAtExit(title: "Version committed", lines: [
+            "Committed: #{last_git_commit[:abbreviated_commit_hash]} #{message}",
+            "Not pushed: releasePhase2 pushes the branch after releasePhase1 has tested and built it",
+            "Next: run releasePhase1",
+        ])
     end
     
     desc "Release phase 1: Run tests and build app"
@@ -187,7 +175,7 @@ platform :android do
 		dryRun = options[:dryRun]
 		warnAboutUnusedSecrets()
 		ensureCleanWorkingTree()
-		wouldFail = ensurePushed(dryRun: dryRun)
+		push = checkBranchPushable(dryRun: dryRun)
 		checkArtifactsCommit()
 		versionInfo = getVersionInfo()
 		versionComponents = parseVersionCode(versionInfo)
@@ -198,18 +186,19 @@ platform :android do
 		isPrerelease = isPrerelease(versionComponents)
 		huaweiCredentials = uploadsToHuawei(isPrerelease: isPrerelease) ? askForHuaweiCredentials() : nil
 		tagName = getTagName(versionComponents)
-		preReleaseChecks(versionInfo: versionInfo, tagName: tagName, type: versionComponents["type"], track: storeTrack, isPrerelease: isPrerelease, dryRun: dryRun)
+		preReleaseChecks(versionInfo: versionInfo, tagName: tagName, type: versionComponents["type"], track: storeTrack, isPrerelease: isPrerelease, push: push, dryRun: dryRun)
 		checkArtifactsExist(versionCode: versionInfo["versionCode"])
 		repoSpecificChecks(isPrerelease: isPrerelease)  # needs to be overwritten in apps
 		summary = [
+			pushBranch(push: push, dryRun: dryRun),
 			tag(name: tagName, dryRun: dryRun),
 			createGithubRelease(token: githubToken, name: versionInfo["versionName"], tag: tagName, versionCode: versionInfo["versionCode"], isPrerelease: isPrerelease, dryRun: dryRun),
 			uploadToPlayStore(track: storeTrack, versionCode: versionInfo["versionCode"], dryRun: dryRun),
 			uploadToHuawei(versionCode: versionInfo["versionCode"], credentials: huaweiCredentials, dryRun: dryRun),
 		].compact
 		if dryRun
-			summary += wouldFail.map { |message| "Would fail in releasePhase2: #{message}" }
-			summary << (wouldFail.empty? ? "Next: run releasePhase2" : "Next: fix the above, then run releasePhase2")
+			summary += push[:problems].map { |message| "Would fail in releasePhase2: #{message}" }
+			summary << (push[:problems].empty? ? "Next: run releasePhase2" : "Next: fix the above, then run releasePhase2")
 			printAtExit(title: "Dry run of #{versionInfo["versionName"]} finished, nothing was published", lines: summary)
 		else
 			summary << "Next: check the GitHub release and the release in the Google Play Console"
@@ -740,32 +729,62 @@ platform :android do
 		end
 	end
 
-	desc "Check that all local commits are pushed to the upstream branch, ask if the upstream branch has newer commits. " +
-		"Returns the problems a dry run only warns about."
-	private_lane :ensurePushed do |options|
-		sh("git fetch --quiet")
-		upstream, status = Open3.capture2("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	desc "Check that the branch can be pushed before anything is published: it must not have diverged from its upstream " +
+		"branch, and if the upstream branch has newer commits, ask. Returns what pushBranch pushes, and the problems a dry run only warns about."
+	private_lane :checkBranchPushable do |options|
+		branch, status = Open3.capture2("git", "symbolic-ref", "--quiet", "--short", "HEAD")
 		if !status.success?
-			message = "Current branch has no upstream branch"
-			dryRunOr(dryRun: options[:dryRun], message: message)
-			next [message]
+			UI.user_error!("HEAD is detached, check out the release branch first")
 		end
+		branch = branch.strip
+		remote, remoteStatus = Open3.capture2("git", "config", "branch.#{branch}.remote")
+		merge, mergeStatus = Open3.capture2("git", "config", "branch.#{branch}.merge")
+		if !remoteStatus.success? || !mergeStatus.success?
+			next {
+				target: ["--set-upstream", "origin", "HEAD"],
+				description: "branch #{branch} to origin, as new upstream branch",
+				problems: [],
+			}
+		end
+		remote = remote.strip
+		merge = merge.strip
+		sh("git", "fetch", "--quiet", remote)
+		upstream = sh("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", log: false).strip
+		unpushed = sh("git", "rev-list", "--count", "#{upstream}..HEAD", log: false).strip.to_i
+		missing = sh("git", "rev-list", "--count", "HEAD..#{upstream}", log: false).strip.to_i
 		problems = []
-		upstream = upstream.strip
-		unpushed = sh("git rev-list --count #{upstream}..HEAD", log: false).strip.to_i
-		if unpushed > 0
-			problems << "#{unpushed} commit(s) not pushed to #{upstream}"
+		if unpushed > 0 && missing > 0
+			problems << "#{branch} and #{upstream} have diverged (#{unpushed} local, #{missing} upstream commit(s)), " +
+				"rebase onto or reset to #{upstream} first"
 			dryRunOr(dryRun: options[:dryRun], message: problems.last)
-		end
-		missing = sh("git rev-list --count HEAD..#{upstream}", log: false).strip.to_i
-		if missing > 0
+		elsif missing > 0
 			promptYesNo(
 				title: "#{upstream} has newer commits",
 				text: "#{missing} commit(s) on #{upstream} are not in the local branch and will not be part of this release.",
 				question: "Release without these commits?"
 			)
 		end
-		problems
+		if !problems.empty?
+			# only reached in a dry run, the push would be rejected
+			next { target: nil, description: "nothing, #{branch} has diverged from #{upstream}", problems: problems }
+		end
+		{
+			target: unpushed > 0 ? [remote, "HEAD:#{merge}"] : nil,
+			description: unpushed > 0 ? "#{unpushed} commit(s) of #{branch} to #{upstream}" : "nothing, #{branch} is pushed",
+			problems: problems,
+		}
+	end
+
+	desc "Push the release branch, as checked by checkBranchPushable, returns a summary"
+	private_lane :pushBranch do |options|
+		push = options[:push]
+		next nil if push[:target].nil?
+		if options[:dryRun]
+			UI.important("[dry run] would push #{push[:description]}: git push #{push[:target].join(" ")}")
+			next "Branch: would push #{push[:description]}"
+		end
+		sh("git", "push", *push[:target])
+		"Branch: pushed #{push[:description]}"
 	end
 
 	desc "Fail with the message, or only warn about it in a dry run"
@@ -849,6 +868,7 @@ platform :android do
 		text = "Version name: #{versionInfo["versionName"]}\n" +
 				"Version code: #{versionInfo["versionCode"]}\n" +
 				"Current branch: #{currentBranch}\n" +
+				"Push: #{options[:push][:description]}\n" +
 				"Version type: #{options[:type]}\n" +
 				"Tag: #{tagName}\n" +
 				"Track: #{options[:track]}\n" +
@@ -858,7 +878,7 @@ platform :android do
 				question: "Run the dry run for this release?")
 		else
 			promptYesNo(title: "Check the release, it is published after this question", text: text,
-				question: "Publish #{versionInfo["versionName"]} now (tag, GitHub release, store uploads)?")
+				question: "Publish #{versionInfo["versionName"]} now (push, tag, GitHub release, store uploads)?")
 		end
 	end
 
